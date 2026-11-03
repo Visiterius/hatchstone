@@ -18,13 +18,33 @@
       c.pts.length <= 100 && c.pts.every(p => point(p)) && integer(c.passes, 1, 2) &&
       Array.isArray(c.knots) && c.knots.length <= 2 && new Set(c.knots).size === c.knots.length &&
       c.knots.every(i => integer(i, 0, c.pts.length - 1)) &&
-      Array.isArray(c.cornerAt) && c.cornerAt.length >= 1 && c.cornerAt.length <= c.pts.length &&
-      c.cornerAt[0] === 0 && c.cornerAt[c.cornerAt.length - 1] === c.pts.length - 1 &&
+      Array.isArray(c.cornerAt) && c.cornerAt.length <= c.pts.length &&
       c.cornerAt.every((n, i) => integer(n, 0, c.pts.length - 1) && (!i || n > c.cornerAt[i - 1])) &&
       Array.isArray(c.branches) && c.branches.length <= 32 && c.branches.every(b =>
         object(b) && integer(b.at, 0, c.pts.length - 1) && Array.isArray(b.pts) &&
         b.pts.length >= 2 && b.pts.length <= 4 && b.pts.every(p => point(p)) &&
-        b.pts[0].every((n, j) => Math.abs(n - c.pts[b.at][j]) < 1e-6)));
+        b.pts[0].every((n, j) => Math.abs(n - c.pts[b.at][j]) < 1e-6))) && validWeb(r.web, r.cracks);
+  }
+
+  // The impact web: every traced crack is one ray; short rays wait for a traced one; hoops join two rays.
+  function validWeb(w, cracks) {
+    if (!object(w) || !point(w.impact) || !Array.isArray(w.rays) || w.rays.length < cracks.length ||
+        w.rays.length > 16 || !Array.isArray(w.hoops) || w.hoops.length > 64) return false;
+    const used = new Set();
+    const rayPts = w.rays.map(ray => {
+      if (!object(ray)) return null;
+      if (ray.crack !== undefined) {
+        if (!integer(ray.crack, 0, cracks.length - 1) || used.has(ray.crack)) return null;
+        used.add(ray.crack);
+        return cracks[ray.crack].pts;
+      }
+      const ok = integer(ray.after, 0, cracks.length - 1) && Array.isArray(ray.pts) && ray.pts.length <= 100 && ray.pts.every(p => point(p));
+      return ok ? ray.pts : null;
+    });
+    if (rayPts.some(p => !p) || used.size !== cracks.length) return false;
+    return w.hoops.every(h => object(h) && integer(h.a, 0, w.rays.length - 1) && integer(h.b, 0, w.rays.length - 1) &&
+      integer(h.ia, 0, rayPts[h.a].length - 1) && integer(h.ib, 0, rayPts[h.b].length - 1) &&
+      Array.isArray(h.pts) && h.pts.length >= 2 && h.pts.length <= 40 && h.pts.every(p => point(p)));
   }
 
   function validState(s, r) {

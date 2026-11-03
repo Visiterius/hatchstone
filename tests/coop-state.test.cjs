@@ -8,6 +8,9 @@ const round = () => ({
   stone: 0, target: 24, hollow: [0.5, 0.5],
   cracks: Array.from({ length: 3 }, () => ({ pts: [[0.2, 0.2], [0.4, 0.4], [0.5, 0.5]],
     cornerAt: [0, 2], branches: [{ at: 1, pts: [[0.4, 0.4], [0.45, 0.35]] }], knots: [], passes: 1 })),
+  web: { impact: [0.5, 0.45],
+    rays: [{ crack: 0 }, { after: 0, pts: [[0.5, 0.4], [0.55, 0.3]] }, { crack: 1 }, { crack: 2 }],
+    hoops: [{ a: 1, ia: 1, b: 2, ib: 1, pts: [[0.4, 0.4], [0.5, 0.38], [0.55, 0.3]] }] },
 });
 const state = () => ({
   round: "test-round-123456", seq: 1, phase: "cracking", clock: 2, t: 0, acc: { sum: 5, n: 1 },
@@ -40,7 +43,21 @@ for (const [label, change] of [
   ["branch detached from crack", r => { r.cracks[0].branches[0].pts[0] = [0, 0]; }],
   ["invalid pass count", r => { r.cracks[0].passes = 100; }],
   ["invalid species id", r => { r.species = "<img src=x>"; }],
+  ["missing impact web", r => { delete r.web; }],
+  ["out-of-bounds impact", r => { r.web.impact = [3, 3]; }],
+  ["crack missing from the web", r => { r.web.rays = r.web.rays.filter(x => x.crack !== 2); }],
+  ["crack used twice in the web", r => { r.web.rays[2].crack = 0; }],
+  ["short ray waiting on no crack", r => { r.web.rays[1].after = 9; }],
+  ["hoop on a missing ray", r => { r.web.hoops[0].b = 9; }],
+  ["hoop past the end of its ray", r => { r.web.hoops[0].ia = 50; }],
+  ["oversized hoop", r => { r.web.hoops[0].pts = Array(41).fill([0.4, 0.4]); }],
+  ["too many hoops", r => { r.web.hoops = Array(65).fill(r.web.hoops[0]); }],
 ]) test(`rejects ${label}`, () => { const r = round(); change(r); assert.equal(S.validRound(r), false); });
+test("accepts impact-web cracks, which have no corners or branches", () => {
+  const r = round();
+  r.cracks.forEach(c => { c.cornerAt = []; c.branches = []; });
+  assert.equal(S.validRound(r), true);
+});
 test("accepts the engine's degenerate single-point crack without inventing geometry", () => {
   const r = round();
   r.cracks[0] = { pts: [[0.5, 0.5]], cornerAt: [0], branches: [], knots: [], passes: 1 };

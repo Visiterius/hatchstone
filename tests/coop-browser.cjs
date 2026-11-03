@@ -10,6 +10,9 @@ const connected = p => p.eval("!!window.__coop?.peer?.connected");
 const phase = p => p.eval("window.__game.egg?.state");
 const progress = p => p.eval("JSON.stringify(window.__game.egg?.cracks.map(c => [c.cov,c.pass,c.done,c.knots.map(k=>k.broken)]))");
 const saved = p => p.eval("JSON.parse(localStorage.getItem('hatchstone.save'))");
+// The impact web in egg-relative coordinates, and which of its short rays and hoops have appeared.
+const web = p => p.eval(`(() => { const e = window.__game.egg, n = pt => HatchstoneCoopState.normalisePoint(pt[0], pt[1], L).map(v => v.toFixed(3));
+  return JSON.stringify({ impact: n(e.impact), rays: e.rays.map(r => r.crack ? "crack" : r.drawn), hoops: e.hoops.map(h => [h.a, h.b, h.drawn, n(h.pts[1])]) }); })()`);
 
 async function seed(page, name, id, shards) {
   await page.eval(`(() => {
@@ -97,6 +100,7 @@ test("two isolated devices share a real WebRTC egg without replacing solo saves"
       });
       await waitFor("both eggs cracking", async () => await phase(host)==="cracking" && await phase(guest)==="cracking");
       assert.deepEqual(await host.eval("window.__coop.round"), await guest.eval("window.__coop.round"));
+      assert.equal(await web(host), await web(guest), "Shared impact web");
     });
 
     await stage("inactive navigation and backup controls cannot steal a shared round", async () => {
@@ -148,6 +152,8 @@ test("two isolated devices share a real WebRTC egg without replacing solo saves"
       assert.equal(await host.eval("window.__game.egg.cracks.every(c=>c.done)"), true);
       assert.equal(await guest.eval("window.__game.egg.cracks.every(c=>c.done)"), true);
       assert.equal(await progress(host), await progress(guest));
+      assert.equal(await web(host), await web(guest), "Both players see the same crack web");
+      assert.equal(await guest.eval("window.__game.egg.hoops.length > 0 && window.__game.egg.hoops.every(h => h.drawn)"), true, "Every hoop appears once its rays are traced");
     });
 
     await stage("guest can open the shell and both polish the same face", async () => {
