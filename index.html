@@ -276,6 +276,7 @@
   #backupMsg { color: #b9e88a; }
   /* co-op invite / reply dialog */
   #coopDialog .card { text-align: left; max-height: 85vh; max-height: 85dvh; overflow-y: auto; overscroll-behavior: contain; }
+  #coopDialog .card > * { flex-shrink: 0; }
   #coopDialog h2, #coopDialog .lead2 { text-align: center; }
   #coopDialog .coop-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 10px 0; }
   #coopDialog input, #coopDialog select { width: 100%; border-radius: 12px; border: 1px solid var(--glass-edge); background: rgba(0,0,0,.25); color: var(--ink); padding: 10px; font: inherit; }
@@ -490,22 +491,23 @@
 <div id="coopDialog" class="overlay modal hidden" role="dialog" aria-modal="true" aria-labelledby="coopTitle">
   <div class="card glass dark wide">
     <h2 id="coopTitle">Play together</h2>
-    <p class="sub lead2">One host chooses the shared egg. Exchange the codes privately, then both trace the same stone. Connecting uses Google STUN and shares network addresses with your friend. Some networks need a relay that this game does not provide.</p>
+    <p class="sub lead2">One host chooses the shared egg and sends an invite link; the friend taps it and sends a reply link back. Then both trace the same stone. Send the links only to the friend you're playing with. Connecting uses Google STUN and shares network addresses with your friend. Some networks need a relay that this game does not provide.</p>
     <p id="coopStatus" aria-live="polite"></p>
     <p id="coopError" role="alert"></p>
+    <div class="coop-actions"><button class="cta" id="coopJoinNow" hidden>Join the shared egg ✦</button><button class="pillbtn" id="coopCopyPending" hidden>📋 Copy reply</button></div>
     <label for="coopDifficulty">Egg difficulty</label>
     <select id="coopDifficulty" aria-label="Shared egg difficulty"><option value="1">Gentle · 3 cracks</option><option value="4">Knotted · 3 cracks</option><option value="8">Hard stone · 4 cracks</option></select>
     <div class="coop-actions"><button class="act" id="coopHost">Host a shared egg</button><button class="act" id="coopBegin" disabled>Start shared egg</button></div>
-    <label for="coopInvite">Host invite · copy to your friend</label>
+    <label for="coopInvite">Host invite · send it to your friend</label>
     <input id="coopInvite" readonly aria-label="Host invite" spellcheck="false">
-    <div class="coop-actions"><button class="pillbtn" id="coopCopyInvite">📋 Copy invite</button></div>
-    <label for="coopInviteIn">Guest: paste a host invite</label>
+    <div class="coop-actions"><button class="act" id="coopSendInvite">📤 Send invite link</button><button class="pillbtn" id="coopCopyInvite">📋 Copy code</button></div>
+    <label for="coopInviteIn">Guest: tap the invite link, or paste it here</label>
     <input id="coopInviteIn" aria-label="Paste host invite" maxlength="32768" autocapitalize="none" autocorrect="off" spellcheck="false">
     <div class="coop-actions"><button class="act" id="coopJoin">Join as guest</button></div>
-    <label for="coopReply">Guest reply · copy to the host</label>
+    <label for="coopReply">Guest reply · send it back to the host</label>
     <input id="coopReply" readonly aria-label="Guest reply" spellcheck="false">
-    <div class="coop-actions"><button class="pillbtn" id="coopCopyReply">📋 Copy reply</button></div>
-    <label for="coopReplyIn">Host: paste the guest reply</label>
+    <div class="coop-actions"><button class="act" id="coopSendReply">📤 Send reply link</button><button class="pillbtn" id="coopCopyReply">📋 Copy code</button></div>
+    <label for="coopReplyIn">Host: tap the reply link, or paste it here</label>
     <input id="coopReplyIn" aria-label="Paste guest reply" maxlength="32768" autocapitalize="none" autocorrect="off" spellcheck="false">
     <div class="coop-actions"><button class="act" id="coopAccept">Accept guest</button><button class="pillbtn" id="coopLeave">Leave room</button><button class="ghost" id="coopClose">close</button></div>
   </div>
@@ -3518,11 +3520,62 @@ function coopCopy(value, label) {
   if (!value) return;
   const done = () => toast(label + " copied ✓");
   const select = () => {
-    const input = label === "Reply" ? $("coopReply") : $("coopInvite");
+    const input = label.startsWith("Reply") ? $("coopReply") : $("coopInvite");
     input.focus(); input.select(); toast("Code selected — copy it using your browser.");
   };
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(value).then(done).catch(select);
   else select();
+}
+// Codes travel as links: the code sits after the #, so it never reaches the web server.
+const COOP_REPLY_KEY = "hatchstone.coopReply";
+const coopLink = (kind, code) => location.origin + location.pathname + "#" + kind + "=" + code;
+function coopCodeFrom(text, kind) {
+  const t = (text || "").trim(), at = t.indexOf("#" + kind + "=");
+  return at < 0 ? t : t.slice(at + kind.length + 2);
+}
+async function coopSendLink(kind, code) {
+  if (!code) return;
+  const url = coopLink(kind, code);
+  const text = kind === "join" ? "Crack a Hatchstone egg with me 🥚✨ Tap to join:" : "Here's my Hatchstone reply, tap it to let me in:";
+  if (navigator.share) {
+    try { await navigator.share({ title: "Hatchstone", text, url }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  coopCopy(url, kind === "join" ? "Invite link" : "Reply link");
+}
+// The host tapped the guest's reply link and it opened in another tab: hand the reply to the hosting tab.
+function coopTakeReply() {
+  const s = coopSession;
+  if (!s || s.role !== "host" || s.peer.connected || $("coopReplyIn").value) return;
+  let pending;
+  try { pending = JSON.parse(localStorage.getItem(COOP_REPLY_KEY)); } catch { return; }
+  if (!pending || typeof pending.code !== "string" || Date.now() - pending.t > 15 * 60e3) return;
+  try { if (HatchstoneLink.decodeSignal(pending.code).room !== s.peer.room) return; } catch { return; }
+  try { localStorage.removeItem(COOP_REPLY_KEY); } catch {}
+  $("coopReplyIn").value = pending.code;
+  if ($("coopDialog").classList.contains("hidden")) coopOpenDialog();
+  coopAccept();
+}
+function coopOpenLink() {
+  const m = /^#(join|reply)=(.+)$/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  const [, kind, code] = m;
+  if (kind === "join") {
+    if (coopSession) return;
+    coopOpenDialog();
+    $("coopInviteIn").value = code;
+    coopUiStatus("You're invited to a shared egg ✦");
+    $("coopJoinNow").hidden = false; $("coopJoinNow").focus();
+    return;
+  }
+  // a reply link opened in the hosting tab itself
+  if (coopSession && coopSession.role === "host") { $("coopReplyIn").value = code; coopOpenDialog(); coopAccept(); return; }
+  try { localStorage.setItem(COOP_REPLY_KEY, JSON.stringify({ code, t: Date.now() })); } catch {}
+  coopOpenDialog();
+  $("coopReplyIn").value = code;
+  coopUiStatus("Reply received ✓ Go back to the Hatchstone tab where you made the invite. It connects by itself.");
+  coopUiError("If it doesn't, copy this reply and paste it there.");
+  $("coopCopyPending").hidden = false;
 }
 function coopRoundCatalogValid(r) {
   return !!(r && CRYSTAL[r.crystal] && SP[r.species] && STONES[r.stone] && SP[r.species].crystal === r.crystal);
@@ -3823,7 +3876,7 @@ function coopShowRoom() {
 }
 function coopResetFields() {
   for (const id of ["coopInvite", "coopReply", "coopInviteIn", "coopReplyIn"]) $(id).value = "";
-  coopUiStatus(""); coopUiError("");
+  coopUiStatus(""); coopUiError(""); $("coopJoinNow").hidden = $("coopCopyPending").hidden = true;
   $("coopBegin").disabled = true; $("coopAccept").disabled = false; $("coopHost").disabled = false; $("coopJoin").disabled = false;
 }
 function coopEnd(reason = "left", silent = false) {
@@ -3861,23 +3914,24 @@ async function coopHost() {
   try {
     const invite = await s.peer.host();
     if (!coopLive(s)) return;
-    $("coopInvite").value = invite; $("coopAccept").disabled = false; coopUiStatus("Invite ready — copy it to your friend, then paste their reply."); coopShowRoom();
+    $("coopInvite").value = invite; $("coopAccept").disabled = false; coopUiStatus("Invite ready ✦ Send the link to your friend, then tap the reply link they send back."); coopShowRoom();
   } catch (err) { coopReportFailure(s, err.message || "Could not create an invite"); }
 }
 async function coopJoin() {
-  const invite = $("coopInviteIn").value.trim();
+  const invite = coopCodeFrom($("coopInviteIn").value, "join");
   if (!invite) { coopUiError("Paste the host invite first."); return; }
   sfx.init(); if (sfx.ac?.state === "suspended") sfx.ac.resume().catch(() => {});
-  coopUiError(""); coopUiStatus("Joining the shared room…"); $("coopHost").disabled = true; $("coopJoin").disabled = true;
+  coopUiError(""); coopUiStatus("Joining the shared room…"); $("coopHost").disabled = true; $("coopJoin").disabled = true; $("coopJoinNow").hidden = true;
   const s = coopSetSession("guest");
   try {
     const reply = await s.peer.join(invite);
     if (!coopLive(s)) return;
-    $("coopReply").value = reply; coopUiStatus("Reply ready — copy it to the host and wait for the shared egg."); coopShowRoom();
+    $("coopReply").value = reply; coopUiStatus("Reply ready ✦ Send it back to the host and wait for the shared egg."); coopShowRoom();
+    $("coopSendReply").scrollIntoView({ block: "center", behavior: "smooth" });
   } catch (err) { coopReportFailure(s, err.message || "Could not join that invite"); }
 }
 async function coopAccept() {
-  const s = coopSession, reply = $("coopReplyIn").value.trim();
+  const s = coopSession, reply = coopCodeFrom($("coopReplyIn").value, "reply");
   if (!s || s.role !== "host" || !reply) { coopUiError("Paste the guest reply first."); return; }
   try {
     await s.peer.accept(reply); if (!coopLive(s)) return;
@@ -3917,10 +3971,18 @@ $("coopRoom").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key
 $("coopRoomLeave").addEventListener("click", () => coopEnd("left"));
 $("coopHost").addEventListener("click", coopHost);
 $("coopJoin").addEventListener("click", coopJoin);
+$("coopJoinNow").addEventListener("click", coopJoin);
+$("coopCopyPending").addEventListener("click", () => coopCopy($("coopReplyIn").value, "Reply"));
 $("coopAccept").addEventListener("click", coopAccept);
 $("coopBegin").addEventListener("click", coopStartRound);
 $("coopCopyInvite").addEventListener("click", () => coopCopy($("coopInvite").value, "Invite"));
 $("coopCopyReply").addEventListener("click", () => coopCopy($("coopReply").value, "Reply"));
+$("coopSendInvite").addEventListener("click", () => coopSendLink("join", $("coopInvite").value));
+$("coopSendReply").addEventListener("click", () => coopSendLink("reply", $("coopReply").value));
+addEventListener("hashchange", coopOpenLink);
+addEventListener("storage", e => { if (e.key === COOP_REPLY_KEY && e.newValue) coopTakeReply(); });
+addEventListener("visibilitychange", () => { if (!document.hidden) coopTakeReply(); });
+setTimeout(coopOpenLink);
 $("coopClose").addEventListener("click", () => {
   if (coopSession?.peer.connected) show("coopDialog", false); else coopEnd("cancelled", true);
   if (coopReturnFocus?.isConnected && !coopReturnFocus.closest(".hidden")) coopReturnFocus.focus();
