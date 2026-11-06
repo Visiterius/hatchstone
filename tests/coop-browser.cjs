@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { launch, waitFor, sleep } = require("./browser-helper.cjs");
 const root = path.join(__dirname, "..");
+const quickInvites = process.env.HATCHSTONE_INVITES === "1";
 
 const connected = p => p.eval("!!window.__coop?.peer?.connected");
 const phase = p => p.eval("window.__game.egg?.state");
@@ -28,18 +29,58 @@ async function observeWire(page) {
     return true;
   })()`);
 }
-async function connect(host, guest) {
+async function press(page, id) {
+  await waitFor("visible stable dialog",()=>page.eval("getComputedStyle(document.getElementById('coopDialog')).opacity==='1' && !document.getElementById('coopDialog').getAnimations({subtree:true}).some(a=>a.playState==='running')"));
+  const point = await page.eval(`(() => { const el=document.getElementById(${JSON.stringify(id)}); el.scrollIntoView({block:'center',behavior:'instant'}); const r=el.getBoundingClientRect(); return [r.x+r.width/2,r.y+r.height/2]; })()`);
+  const hit = await page.eval(`document.elementFromPoint(${point[0]},${point[1]})?.closest('button')?.id`);
+  assert.equal(hit, id, "Primary setup control is reachable by real pointer input");
+  await page.tap(...point); // Real hit-testing, not HTMLElement.click().
+}
+async function connect(host, guest, browser) {
+  let link = null;
   await host.click("startCoop");
-  await host.click("coopHost");
-  const invite = await waitFor("host invite generation", () => host.eval("document.getElementById('coopInvite').value"), 25000);
-  await guest.click("startCoop");
-  await guest.fill("coopInviteIn", invite);
-  await guest.click("coopJoin");
-  const reply = await waitFor("guest reply generation", () => guest.eval("document.getElementById('coopReply').value"), 25000);
-  await host.fill("coopReplyIn", reply);
-  await host.click("coopAccept");
-  await waitFor("real WebRTC data channel on both devices", async () => await connected(host) && await connected(guest), 25000);
+  if (quickInvites) {
+    await press(host, "coopQuickHost");
+    const invite = await waitFor("one-link invite generation", () => host.eval("document.getElementById('coopLinkOut').value"), 20000);
+    link = invite;
+    const u = new URL(invite);
+    assert.equal(u.pathname, "/hatchstone/", "Invite preserves deployment prefix");
+    assert.ok(invite.length < 200, "Invitation is a small link, not an encoded SDP blob");
+    assert.match(u.hash, /^#coop=v2\.[a-f0-9]{24}\.[a-f0-9]{32}$/);
+    assert.equal(await host.eval("document.getElementById('coopInvite').value"), "", "No manual host code");
+    // Verify the real Telegram button without sending anything to a Telegram account.
+    await host.eval("window.__realOpen=window.open;window.open=(url,target,features)=>{window.__share={url,target,features};return null}");
+    await host.click("coopTelegram");
+    const share = await host.eval("window.__share");
+    await host.eval("window.open=window.__realOpen;delete window.__realOpen;true");
+    assert.equal(new URL(share.url).origin, "https://t.me");
+    assert.equal(new URL(share.url).pathname, "/share/url");
+    assert.equal(new URL(share.url).searchParams.get("url"), invite, "Telegram preserves the complete fragment");
+    assert.equal(share.features, "noopener,noreferrer");
+    const previous = await guest.eval("window.__testLoadToken");
+    await browser.cdp.send("Page.navigate", {url:"about:blank"}, guest.id);
+    await browser.cdp.send("Page.navigate", {url:invite}, guest.id);
+    await waitFor("guest invitation landing", () => guest.eval("!!window.__game && window.__testLoadToken!=="+JSON.stringify(previous)+" && !document.getElementById('coopDialog').classList.contains('hidden')"));
+    assert.equal(await guest.eval("window.__coop.peer===null && typeof window.Peer==='undefined'"), true, "Landing does not join automatically");
+    await press(guest, "coopJoinLink");
+    assert.equal(await guest.eval("location.hash"), "", "Accepted invitation removed from the address bar");
+  } else {
+    await host.click("coopHost");
+    const invite = await waitFor("host invite generation", () => host.eval("document.getElementById('coopInvite').value"), 25000);
+    await guest.click("startCoop");
+    await guest.fill("coopInviteIn", invite);
+    await guest.click("coopJoin");
+    const reply = await waitFor("guest reply generation", () => guest.eval("document.getElementById('coopReply').value"), 25000);
+    await host.fill("coopReplyIn", reply);
+    await host.click("coopAccept");
+  }
+  await waitFor("real WebRTC data channel on both devices", async () => await connected(host) && await connected(guest), 35000);
+  if (quickInvites) {
+    assert.equal(await guest.eval("document.getElementById('coopReply').value"), "", "No guest reply code");
+    assert.equal(await host.eval("document.getElementById('coopTelegram').disabled"), true, "Connected invite is consumed");
+  }
   await observeWire(host);
+  return link;
 }
 async function traceNext(page) {
   const crack = await page.eval(`(() => {
@@ -73,23 +114,25 @@ test("two isolated devices share a real WebRTC egg without replacing solo saves"
   try {
     const host = await browser.page(400, 800), guest = await browser.page(600, 920);
     assert.equal(await host.eval("!!document.getElementById('startCoop')"), true, "Co-op entry point missing");
+    if (quickInvites) assert.equal(await host.eval("!!document.getElementById('coopQuickHost')"), true, "One-link host control missing");
     if (baseline) assert.fail("Baseline unexpectedly implements the new feature");
     await seed(host, "Host keepsake", 901, 29);
     await seed(guest, "Guest keepsake", 902, 41);
     const beforeHost = await saved(host), beforeGuest = await saved(guest);
+    let firstInvite;
     assert.notDeepEqual(beforeHost, beforeGuest, "Independent local storage fixtures");
 
     await stage("bad invites remain actionable and cancelled setup cannot reopen a room", async () => {
       await guest.click("startCoop"); await guest.fill("coopInviteIn", "not-a-hatchstone-invite"); await guest.click("coopJoin");
       await waitFor("visible invite error", () => guest.eval("!document.getElementById('coopDialog').classList.contains('hidden') && !!document.getElementById('coopError').textContent"));
       assert.equal(await connected(guest), false); await guest.click("coopClose");
-      await host.click("startCoop"); await host.click("coopHost"); await host.click("coopClose");
+      await host.click("startCoop"); await host.click(quickInvites ? "coopQuickHost" : "coopHost"); await host.click("coopClose");
       await sleep(180);
       assert.equal(await host.eval("window.__coop.peer===null && document.getElementById('coopDialog').classList.contains('hidden')"), true);
     });
 
-    await stage("explicit invite/reply handshake opens a data channel", async () => {
-      await connect(host, guest);
+    await stage(quickInvites ? "one shared link opens an authenticated data channel without reply codes" : "explicit invite/reply handshake opens a data channel", async () => {
+      firstInvite = await connect(host, guest, browser);
       assert.equal(await host.eval("window.__coop.peer.role"), "host");
       assert.equal(await guest.eval("window.__coop.peer.role"), "guest");
       await host.fill("coopDifficulty", "8");
@@ -221,6 +264,22 @@ test("two isolated devices share a real WebRTC egg without replacing solo saves"
       assert.deepEqual(await saved(host),afterHost); assert.deepEqual(await saved(guest),afterGuest);
     });
 
+    if (quickInvites) await stage("used link is rejected and a fresh link reconnects without changing rewards or progress", async () => {
+      const stranger = await browser.page(420, 860);
+      await stranger.click("startCoop"); await stranger.fill("coopLinkIn", firstInvite); await stranger.click("coopJoinLink");
+      await waitFor("used room unavailable",()=>stranger.eval("window.__coop.peer===null && !!document.getElementById('coopError').textContent"),35000);
+      assert.match(await stranger.eval("document.getElementById('coopError').textContent"), /fresh|available|network|signaling/i);
+      const nextInvite = await connect(host, guest, browser);
+      assert.notEqual(nextInvite, firstInvite);
+      await host.click("coopLeave");
+      await waitFor("fresh session cleanly closed",async()=>!await connected(host) && !await connected(guest));
+      assert.deepEqual(await saved(host), afterHost);
+      // A normal document reload increments the save revision; it must not grant/rewrite progress.
+      const reloadedGuest = await saved(guest);
+      assert.ok(reloadedGuest.rev >= afterGuest.rev);
+      assert.deepEqual({...reloadedGuest, rev:afterGuest.rev}, afterGuest);
+    });
+
     await stage("latest upstream interactive nest decorations still respond to real pointer input", async () => {
       const spot=await host.eval(`(() => {
         save.decor.lamp={on:true}; save.backupAt=Date.now(); persist(); setScene('nest');
@@ -238,7 +297,7 @@ test("two isolated devices share a real WebRTC egg without replacing solo saves"
       await traceNext(host);
       assert.equal(await host.eval("window.__game.egg.cracks.some(c=>c.cov.some(Boolean))"),true);
       await waitFor("service worker active", () => host.eval("navigator.serviceWorker.getRegistration().then(r=>!!r?.active)"));
-      for (const file of ["coop-link.js","coop-state.js"]) {
+      for (const file of ["coop-link.js","coop-invite.js","coop-state.js","vendor/peerjs-1.5.5.min.js"]) {
         assert.equal(await host.eval(`caches.match(new URL(${JSON.stringify(file)},location.href)).then(r=>!!r&&r.status===200)`),true);
       }
       const oldToken=await host.eval("window.__testLoadToken");

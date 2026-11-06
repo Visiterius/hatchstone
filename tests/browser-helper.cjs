@@ -70,7 +70,8 @@ async function launch(root, baseline = false) {
   const scratch = process.env.HATCHSTONE_TEST_TMP || process.env.TMPDIR || os.tmpdir();
   fs.mkdirSync(scratch, { recursive: true });
   const profile = fs.mkdtempSync(path.join(scratch, "hatchstone-browser-"));
-  const baselineIndex = baseline ? execFileSync("git", ["show", "HEAD:index.html"], { cwd: root, encoding: "utf8" }) : null;
+  const baselineRef = process.env.HATCHSTONE_BASE_REF || "HEAD";
+  const baselineIndex = baseline ? execFileSync("git", ["show", baselineRef + ":index.html"], { cwd: root, encoding: "utf8" }) : null;
   const mime = { ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
     ".png": "image/png", ".jpg": "image/jpeg", ".webmanifest": "application/manifest+json" };
   const server = http.createServer((req, res) => {
