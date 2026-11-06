@@ -50,3 +50,43 @@ test("invite landing is explicit, accessible, private until Join, and fails acti
     assert.deepEqual(browser.cdp.errors, []);
   } finally { await browser.close(); }
 });
+
+test("two live hosts can keep their own invite or explicitly switch into one shared egg", {timeout:75000}, async () => {
+  const browser = await launch(root);
+  async function press(page, id) {
+    await waitFor("stable recovery dialog",()=>page.eval("getComputedStyle(document.getElementById('coopDialog')).opacity==='1' && !document.getElementById('coopDialog').getAnimations({subtree:true}).some(a=>a.playState==='running')"));
+    const point=await page.eval(`(() => {const e=document.getElementById(${JSON.stringify(id)});e.scrollIntoView({block:'center',behavior:'instant'});const r=e.getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()`);
+    assert.equal(await page.eval(`document.elementFromPoint(${point[0]},${point[1]})?.closest('button')?.id`),id);
+    await page.tap(...point);
+  }
+  try {
+    const host=await browser.page(400,800), guest=await browser.page(600,920);
+    const saves=await Promise.all([host.eval("localStorage.getItem('hatchstone.save')"),guest.eval("localStorage.getItem('hatchstone.save')")]);
+    for (const page of [host,guest]) {
+      await page.click("startCoop");await page.click("coopQuickHost");
+      await waitFor("live host registered and invitation ready",()=>page.eval("document.getElementById('coopLinkOut').value"),20000);
+    }
+    const invite=await host.eval("document.getElementById('coopLinkOut').value");
+    await guest.eval("window.__oldInvitePeer=window.__coop.peer;true");
+    const hash=JSON.stringify(new URL(invite).hash);
+    await guest.eval("location.hash="+hash);
+    await waitFor("incoming invitation switch",()=>guest.eval("document.getElementById('coopSwitchJoin').getClientRects().length>0"));
+    assert.equal(await guest.eval("window.__coop.peer===window.__oldInvitePeer && !window.__oldInvitePeer._closed"),true);
+    assert.equal(await host.eval("window.__coop.peer.connected"),false,"Opening does not connect");
+    await press(guest,"coopKeepRoom");
+    assert.equal(await guest.eval("window.__coop.peer===window.__oldInvitePeer && !window.__oldInvitePeer._closed"),true);
+    await guest.eval("location.hash="+hash);
+    await waitFor("incoming invitation offered again",()=>guest.eval("document.getElementById('coopSwitchJoin').getClientRects().length>0"));
+    await press(guest,"coopSwitchJoin");
+    await waitFor("both real peers connected after switching",async()=>await host.eval("!!window.__coop.peer?.connected") && await guest.eval("!!window.__coop.peer?.connected"),35000);
+    assert.equal(await guest.eval("window.__oldInvitePeer._closed"),true);
+    assert.equal(await guest.eval("window.__coop.peer.role"),"guest");
+    assert.equal(await guest.eval("location.hash"),"");
+    await press(host,"coopBegin");
+    await waitFor("same real shared egg after switching",async()=>{
+      const a=await host.eval("window.__coop.round?.id"),b=await guest.eval("window.__coop.round?.id");return a&&a===b;
+    });
+    assert.deepEqual(await Promise.all([host.eval("localStorage.getItem('hatchstone.save')"),guest.eval("localStorage.getItem('hatchstone.save')")]),saves);
+    assert.deepEqual(browser.cdp.errors,[]);
+  } finally {await browser.close();}
+});

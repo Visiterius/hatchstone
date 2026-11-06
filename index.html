@@ -508,6 +508,10 @@
     <p class="sub lead2" id="coopLead">Crack an egg together with a friend 🥚</p>
     <p id="coopStatus" aria-live="polite"></p>
     <p id="coopError" role="alert"></p>
+    <div data-v="switchInvite">
+      <p class="sub">Joining leaves your current room and ends any unfinished shared egg. Saved hatchlings stay safe.</p>
+      <div class="coop-actions"><button class="cta" id="coopSwitchJoin">Leave room &amp; join friend</button><button class="pillbtn" id="coopKeepRoom">Keep current room</button></div>
+    </div>
     <div class="coop-actions" data-v="invitedManual"><button class="cta" id="coopJoinNow" hidden>Join the shared egg ✦</button></div>
     <div class="coop-actions" data-v="replyTab"><button class="act" id="coopCopyPending" hidden>📋 Copy reply</button></div>
     <div class="coop-actions" data-v="start"><button class="cta" id="coopQuickHost">Invite a friend ✦</button></div>
@@ -3599,7 +3603,7 @@ function coopOpenLink() {
   history.replaceState(null, "", location.pathname + location.search);
   const [, kind, code] = m;
   if (kind === "join") {
-    if (coopSession) return;
+    if (coopSession) { coopOfferIncomingInvite(code, "manual"); return; }
     coopOpenDialog();
     $("coopInviteIn").value = code;
     coopUiStatus(""); 
@@ -3925,16 +3929,18 @@ function pet(x, y, d) {
 
 // The dialog shows one step at a time; each [data-v] element lists the steps it belongs to.
 const COOP_LEADS = { start: "Crack an egg together with a friend 🥚", invited: "You're invited to a shared egg 🥚", invitedManual: "You're invited to a shared egg 🥚",
+  switchInvite: "Join your friend's room instead?",
   replyTab: "Your friend's reply is here", hostWait: "Send this link to your friend", hostReady: "Your friend is here ✦ Pick an egg",
   guest: "You're in 🥚", manual: "Connect with codes" };
 function coopView() {
   const s = coopSession;
-  const view = s && s.mode === "manual" ? (s.role === "host" && s.peer?.connected ? "hostReady" : "manual")
+  const view = s && coopPendingInvite ? "switchInvite" : s && s.mode === "manual" ? (s.role === "host" && s.peer?.connected ? "hostReady" : "manual")
     : s ? (s.role === "host" ? (s.peer?.connected ? "hostReady" : "hostWait") : "guest")
     : !$("coopJoinNow").hidden ? "invitedManual" : !$("coopCopyPending").hidden ? "replyTab"
     : coopInvited ? "invited" : "start";
   for (const el of $("coopDialog").querySelectorAll("[data-v]")) el.classList.toggle("off", !el.dataset.v.split(" ").includes(view));
   $("coopLead").textContent = COOP_LEADS[view];
+  $("coopStatus").classList.toggle("off", view === "switchInvite");
   if (view === "manual") $("coopAdvanced").open = true;
   const manual = s && s.mode === "manual" ? s.role : "none";
   for (const el of $("coopDialog").querySelectorAll("[data-m]")) el.classList.toggle("off", el.dataset.m !== manual);
@@ -3943,6 +3949,7 @@ function coopView() {
   return view;
 }
 var coopInvited = false;
+var coopPendingInvite = null; // Memory only: opening another link must not replace a live room.
 function coopShowRoom() {
   coopView();
   const on = !!coopSession && !!coopSession.peer;
@@ -3962,7 +3969,7 @@ function coopResetFields() {
   $("coopLinkReady").hidden = true; $("coopAdvanced").open = false;
   $("coopCopyLink").disabled = $("coopShareLink").disabled = $("coopTelegram").disabled = true;
   $("coopBegin").disabled = true; $("coopBegin").hidden = true; $("coopAccept").disabled = false;
-  coopInvited = false; coopView();
+  coopInvited = false; coopPendingInvite = null; coopView();
 }
 function coopEnd(reason = "left", silent = false) {
   coopForgetLocationInvite();
@@ -4009,7 +4016,7 @@ async function coopHostLink() {
   } catch (err) { coopReportFailure(s, err.message || "Could not create an invite link. Try Advanced or another network."); }
 }
 async function coopJoinLink() {
-  if (coopSession) return;
+  if (coopSession) { coopOfferIncomingInvite($("coopLinkIn").value.trim(), "invite"); return; }
   let token;
   try { token = globalThis.HatchstoneInvite.parseInvite($("coopLinkIn").value.trim()); }
   catch (err) { coopUiError(err.message || "Open or paste a complete invite link first."); return; }
@@ -4024,7 +4031,7 @@ async function coopJoinLink() {
 }
 function coopImportLocationInvite() {
   if (!location.hash.startsWith("#coop=")) return;
-  if (coopSession) { toast("Leave the current shared room before opening another invite."); return; }
+  if (coopSession) { coopOfferIncomingInvite(location.href, "invite"); return; }
   coopOpenDialog();
   try {
     globalThis.HatchstoneInvite.parseInvite(location.href);
@@ -4032,6 +4039,46 @@ function coopImportLocationInvite() {
     coopInvited = true; coopView();
     if (!$("coopJoinLink").disabled) $("coopJoinLink").focus();
   } catch (err) { coopUiError(err.message || "This invite link is incomplete. Ask your friend for a fresh link."); }
+}
+function coopOfferIncomingInvite(input, mode) {
+  // Validate before offering to close anything; malformed/self links keep the existing room.
+  coopPendingInvite = null;
+  coopForgetLocationInvite();
+  coopOpenDialog();
+  let code, room;
+  try {
+    if (mode === "invite") {
+      code = globalThis.HatchstoneInvite.parseInvite(input);
+      room = code.slice(3, 27);
+    } else {
+      code = input;
+      const signal = globalThis.HatchstoneLink.decodeSignal(code);
+      if (signal.type !== "offer") throw new Error("Expected an offer invite");
+      room = signal.room;
+    }
+  } catch {
+    coopUiError("This invite link is incomplete or invalid. Ask your friend for a fresh link; your current room is still open.");
+    return;
+  }
+  const s = coopSession;
+  if (!s) return;
+  if (s.mode === mode && s.peer?.room === room) {
+    coopUiError(s.role === "host" ? "This is your own invite. Send it to your friend and keep this tab open." : "You're already in this room. Your friend can start the shared egg.");
+    return;
+  }
+  coopPendingInvite = { code, mode };
+  coopUiError(""); coopView(); $("coopSwitchJoin").focus();
+}
+function coopKeepCurrentRoom() {
+  coopPendingInvite = null; coopForgetLocationInvite(); coopUiError(""); coopShowRoom();
+}
+function coopSwitchToInvite() {
+  const pending = coopPendingInvite;
+  if (!pending || !coopSession) return;
+  // The explicit switch is the only action that ends the old room and starts a new connection.
+  coopEnd("switched", true); coopOpenDialog();
+  if (pending.mode === "invite") { $("coopLinkIn").value = pending.code; coopJoinLink(); }
+  else { $("coopInviteIn").value = pending.code; coopJoin(); }
 }
 async function coopHost() {
   sfx.init(); if (sfx.ac?.state === "suspended") sfx.ac.resume().catch(() => {});
@@ -4097,6 +4144,8 @@ $("coopRoom").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key
 $("coopRoomLeave").addEventListener("click", () => coopEnd("left"));
 $("coopQuickHost").addEventListener("click", coopHostLink);
 $("coopJoinLink").addEventListener("click", coopJoinLink);
+$("coopSwitchJoin").addEventListener("click", coopSwitchToInvite);
+$("coopKeepRoom").addEventListener("click", coopKeepCurrentRoom);
 $("coopCopyLink").addEventListener("click", () => coopCopy($("coopLinkOut").value, "Invite link", "coopLinkOut"));
 $("coopShareLink").addEventListener("click", async () => {
   const url = $("coopLinkOut").value;
@@ -4121,8 +4170,11 @@ addEventListener("storage", e => { if (e.key === COOP_REPLY_KEY && e.newValue) c
 addEventListener("visibilitychange", () => { if (!document.hidden) coopTakeReply(); });
 setTimeout(coopOpenLink);
 $("coopClose").addEventListener("click", () => {
+  const declinedInvite = !!coopPendingInvite;
+  coopPendingInvite = null;
   coopForgetLocationInvite();
-  if (coopSession?.peer.connected) show("coopDialog", false); else coopEnd("cancelled", true);
+  if (declinedInvite || coopSession?.peer.connected) { coopView(); show("coopDialog", false); }
+  else coopEnd("cancelled", true);
   if (coopReturnFocus?.isConnected && !coopReturnFocus.closest(".hidden")) coopReturnFocus.focus();
 });
 $("coopDialog").addEventListener("keydown", e => {

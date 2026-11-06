@@ -45,6 +45,11 @@ Both devices need the same game version, served over HTTPS or localhost.
 2. The guest opens the link and taps **Join friend**. That is the entire exchange:
    no generated reply, account, bot, Telegram login or room-code typing. Opening
    a link only displays the invitation; it does not connect until that tap.
+   **Only one person needs to create an invite.** If you already made your own
+   room, opening your friend's link offers **Leave room & join friend** or
+   **Keep current room**. Nothing is disconnected until you choose to switch;
+   an unfinished shared egg ends on switching, but saved hatchlings are kept.
+   Opening your own invite explains that it should be sent to your friend.
 3. When **Friend joined** appears, the host chooses a difficulty and **Start shared
    egg**. Both tabs must stay open; switching apps or locking a phone can suspend
    browser connections. If Telegram's in-app browser lacks WebRTC, open the link
@@ -108,6 +113,7 @@ profile, and drives two isolated storage contexts using CDP:
 ```sh
 npm run test:e2e     # Manual exchange; no external signaling broker
 npm run test:invites # One-link flow; requires live public PeerJS signaling
+npm run test:recovery # Existing-room invitation UI; synthetic peers, no public signaling
 ```
 
 The invite suite reuses the complete gameplay regression with a fresh guest
@@ -120,6 +126,15 @@ pre-change page, run (an expected assertion failure, not a normal quality gate):
 
 ```sh
 HATCHSTONE_BASELINE=1 HATCHSTONE_BASE_REF=a3fa775 npm run test:invites
+```
+
+The recovery suite also checks Keep/Close, invalid/self invites, explicit switching,
+legacy manual links, pointer-reachable controls and unchanged local storage. Its
+peer fixtures deliberately do not establish a real network connection. To verify
+the original room-conflict regression against the pre-fix page:
+
+```sh
+HATCHSTONE_BASELINE=1 HATCHSTONE_BASE_REF=b76da2db42ac0bc13f435874f993c8f1160216ca npm run test:recovery
 ```
 
 The Telegram phone-client picker/send and two physical devices on different
